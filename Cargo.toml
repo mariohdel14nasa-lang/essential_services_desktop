@@ -1,0 +1,9 @@
+[package]
+name = "essential-services-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tao = "0.37"
+url = "2"
+wry = "0.57"
