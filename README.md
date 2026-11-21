@@ -1,34 +1,40 @@
-# Essential Services Desktop
+# Essential Sevices for Desktop
 
-Aplicación de escritorio escrita en Rust que muestra páginas web en una ventana
-integrada con WebView2. En Windows, el motor es Microsoft Edge (Chromium), no
-Gecko/Firefox.
+<img width="2000" height="1414" alt="EssenialAccountFlyer" src="https://github.com/user-attachments/assets/f6153d57-5afe-475b-be0c-09f395e9bacb" />
 
-## Requisitos
+A brand-new way to get user info, such as:
+- eMail
+- Phone number
+- Passwords
+- And more (Coming soon)
 
-- Rust y Cargo (instalables desde [rustup.rs](https://rustup.rs/)).
-- Windows 10/11 con el **WebView2 Runtime** instalado.
+# How to develop
+## How To Build with the web integration
 
-## Ejecutar
+To access user info, you can also implement the web version of the app, on https://mariohdel14nasa-lang.github.io/essentialservicesweb/.
+Once he user signs in into their account, you can access the web's LocalStorage that contais the user's:
+- eMail
+- Phone number
+- Name
+- Tag (unnecesary in most cases)
+- Other
 
-```powershell
-cargo run
-```
+# Credits To...
+- Sameerasw (App base & Draft)
+- Ivorisnoob (Koda)
+- shrimqy (sefirah)
+- FossifyOrg (Calculator)
+- Gemini (I don't know how to code)
 
-La app abre Google por defecto. Se puede indicar otra página al iniciarla:
+# Next steps
+If you have an iDevice, you can access the web version at https://mariohdel14nasa-lang.github.io/essentialservicesweb/. The web is also open source too, at https://github.com/mariohdel14nasa-lang/essentialservicesweb.
 
-```powershell
-cargo run -- https://example.com
-```
-
-La barra de navegación permite volver, avanzar, recargar, abrir direcciones
-HTTP/HTTPS y buscar texto en Google. También acepta `Ctrl+L` para enfocar la
-barra y `Ctrl+R` para recargar.
-
-## Crear el ejecutable
-
-```powershell
-cargo build --release
-```
-
-El ejecutable se genera en `target\release\essential-services-desktop.exe`.
+# Other versions
+- Web (https://github.com/mariohdel14nasa-lang/essentialservicesweb)
+- Mobile
+- Wearables with Android (maybe but idk)
+- Wearables with custom firmware (same as last)
+- TVs with Android TV (soon)
+- TVs with Tizen (probably)
+- Appliances with android (Just download the APK)
+- Appliances  with tizen (Jus use the web)
