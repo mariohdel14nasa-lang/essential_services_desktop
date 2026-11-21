@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Essential Services Desktop",
+      "type": "shell",
+      "command": "cargo run",
+      "inAgents": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "Build Essential Services Desktop (release)",
+      "type": "shell",
+      "command": "cargo build --release",
+      "group": "build",
+      "inAgents": true,
+      "problemMatcher": []
+    }
+  ]
+}
