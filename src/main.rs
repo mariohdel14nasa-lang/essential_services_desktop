@@ -366,11 +366,11 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
           <h2 id="about-heading" data-i18n="about">Acerca de</h2>
           <div class="settings-card about-card">
             <h2 id="about-title">Essential Services v1.0</h2>
-            <p data-i18n="aboutDescription">Essential Services permite compartir fácilmente la tarjeta de contacto y los perfiles mediante NFC Host Card Emulation.</p>
+            <p data-i18n="aboutDescription">A service app for other apps</p>
             <p data-i18n="aboutCredits">Desarrollado por mariohdel14nasa-lang con ❤️ desde 🇪🇸</p>
             <div class="about-links">
               <a href="https://mariohdel14nasa-lang.github.io/essentialservicesweb/" target="_blank" rel="noopener noreferrer" data-i18n="website">Website</a>
-              <a href="https://github.com/mariohdel14nasa-lang/essentialservicesweb" target="_blank" rel="noopener noreferrer" data-i18n="viewGithub">Ver en GitHub</a>
+              <a href="https://github.com/mariohdel14nasa-lang/essential_services_desktop" target="_blank" rel="noopener noreferrer" data-i18n="viewGithub">Ver en GitHub</a>
             </div>
           </div>
         </section>
@@ -416,7 +416,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       credits: "Créditos", calculatorCreators: "Creadores de Calculator",
       draftCreator: "Creador de Draft y de la app base", kodaCreator: "Creador de Koda",
       sefirahCreator: "Creador de Sefirah", about: "Acerca de",
-      aboutDescription: "Essential Services permite compartir fácilmente la tarjeta de contacto y los perfiles mediante NFC Host Card Emulation.",
+      aboutDescription: "A service app for other apps",
       aboutCredits: "Desarrollado por mariohdel14nasa-lang con ❤️ desde 🇪🇸",
       website: "Website", viewGithub: "Ver en GitHub",
       emptyCategory: "No hay apps de {category} disponibles todavía",
@@ -445,7 +445,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       credits: "Credits", calculatorCreators: "Creators of Calculator",
       draftCreator: "Creator of Draft and the base app", kodaCreator: "Creator of Koda",
       sefirahCreator: "Creator of Sefirah", about: "About",
-      aboutDescription: "Essential Services allows seamless sharing of your contact card and profiles using NFC Host Card Emulation.",
+      aboutDescription: "A service app for other apps",
       aboutCredits: "Developed by mariohdel14nasa-lang with ❤️ from 🇪🇸",
       website: "Website", viewGithub: "View on GitHub",
       emptyCategory: "No {category} apps available yet",
