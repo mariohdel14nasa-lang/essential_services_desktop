@@ -1,5 +1,7 @@
 # Essential Sevices for Desktop
 
+## Note! Linux version is for x64 and requires GTK 3 annd WebKitGTK installed!
+
 <img width="2000" height="1414" alt="EssenialAccountFlyer" src="https://github.com/user-attachments/assets/f6153d57-5afe-475b-be0c-09f395e9bacb" />
 
 A brand-new way to get user info, such as:
