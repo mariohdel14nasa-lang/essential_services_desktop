@@ -15,6 +15,20 @@
       "group": "build",
       "inAgents": true,
       "problemMatcher": []
+    },
+    {
+      "label": "Build Essential Services Installer",
+      "type": "shell",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\installer\\build-installer.ps1"
+      ],
+      "inAgents": true,
+      "problemMatcher": []
     }
   ]
 }

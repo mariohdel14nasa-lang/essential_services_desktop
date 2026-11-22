@@ -277,6 +277,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
   if (window.top !== window || window.__essentialServicesControlsInstalled) return;
   window.__essentialServicesControlsInstalled = true;
   const targetOS = "__TARGET_OS__";
+  const installerLanguage = "__INSTALLER_LANGUAGE__";
   const appCatalog = JSON.parse(__APP_CATALOG_JSON__);
 
   const host = document.createElement("div");
@@ -718,7 +719,10 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       restore: "Restore"
     }
   };
-  const language = localStorage.getItem(preferenceKey("language")) === "en" ? "en" : "es";
+  const savedLanguage = localStorage.getItem(preferenceKey("language"));
+  const defaultLanguage = installerLanguage === "en" ? "en" : "es";
+  const language = savedLanguage === "en" || savedLanguage === "es" ? savedLanguage : defaultLanguage;
+  if (savedLanguage !== language) localStorage.setItem(preferenceKey("language"), language);
   const t = (key, values = {}) => {
     let text = translations[language][key] || translations.es[key] || key;
     for (const [name, value] of Object.entries(values)) {
@@ -942,12 +946,42 @@ fn normalize_url(input: &str) -> Result<String, Box<dyn Error>> {
     Ok(url.to_string())
 }
 
+fn parse_startup_args(
+    args: impl IntoIterator<Item = String>,
+) -> Result<(String, String), Box<dyn Error>> {
+    let mut initial_url = None;
+    let mut language = "es".to_owned();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--language=") {
+            language = normalize_language(value)?;
+        } else if arg == "--language" {
+            let value = args.next().ok_or("--language requires a value.")?;
+            language = normalize_language(&value)?;
+        } else if arg.starts_with('-') {
+            return Err(format!("Unknown command-line option: {arg}").into());
+        } else if initial_url.replace(normalize_url(&arg)?).is_some() {
+            return Err("Only one startup URL can be specified.".into());
+        }
+    }
+
+    Ok((
+        initial_url.unwrap_or_else(|| DEFAULT_URL.to_owned()),
+        language,
+    ))
+}
+
+fn normalize_language(language: &str) -> Result<String, Box<dyn Error>> {
+    match language.to_ascii_lowercase().as_str() {
+        "en" | "english" => Ok("en".to_owned()),
+        "es" | "spanish" | "espanol" | "español" => Ok("es".to_owned()),
+        _ => Err(format!("Unsupported installer language: {language}").into()),
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let initial_url = env::args()
-        .nth(1)
-        .map(|url| normalize_url(&url))
-        .transpose()?
-        .unwrap_or_else(|| DEFAULT_URL.to_owned());
+    let (initial_url, installer_language) = parse_startup_args(env::args().skip(1))?;
     let palette = match fetch_palette() {
         Ok(palette) => palette,
         Err(error) => {
@@ -980,6 +1014,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| "null".to_owned());
     let initialization_script = WINDOW_BUTTONS_SCRIPT
         .replace("__TARGET_OS__", TARGET_OS)
+        .replace("__INSTALLER_LANGUAGE__", &installer_language)
         .replace("__PALETTE_CSS__", &palette.css_variables())
         .replace(
             "__APP_CATALOG_JSON__",
@@ -1026,7 +1061,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_url, parse_app_catalog, parse_color, parse_remote_palette, TARGET_OS_KEY,
+        normalize_url, parse_app_catalog, parse_color, parse_remote_palette, parse_startup_args,
+        TARGET_OS_KEY,
     };
 
     #[test]
@@ -1147,5 +1183,31 @@ mod tests {
     #[test]
     fn maps_the_build_platform_to_catalog_key() {
         assert!(["windows", "macos", "linux"].contains(&TARGET_OS_KEY));
+    }
+
+    #[test]
+    fn installer_language_and_startup_url_are_parsed_together() {
+        let (url, language) = parse_startup_args([
+            "https://example.com".to_owned(),
+            "--language=english".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(url, "https://example.com/");
+        assert_eq!(language, "en");
+    }
+
+    #[test]
+    fn spanish_installer_language_is_supported() {
+        assert_eq!(
+            parse_startup_args(["--language=spanish".to_owned()])
+                .unwrap()
+                .1,
+            "es"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_startup_languages() {
+        assert!(parse_startup_args(["--language=fr".to_owned()]).is_err());
     }
 }
