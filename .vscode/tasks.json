@@ -2,14 +2,14 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Run Essential Services Desktop",
+      "label": "Run Essential Services",
       "type": "shell",
       "command": "cargo run",
       "inAgents": true,
       "problemMatcher": []
     },
     {
-      "label": "Build Essential Services Desktop (release)",
+      "label": "Build Essential Services (release)",
       "type": "shell",
       "command": "cargo build --release",
       "group": "build",

@@ -1,15 +1,29 @@
 use std::{env, error::Error};
 
+use serde_json::Value;
 use tao::{
     dpi::LogicalSize,
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
-    window::WindowBuilder,
+    window::{Icon, WindowBuilder},
 };
 use url::Url;
 use wry::{http::Request, NewWindowResponse, WebViewBuilder};
 
 const DEFAULT_URL: &str = "https://mariohdel14nasa-lang.github.io/essentialservicesweb/";
+const APP_CATALOG_URL: &str =
+    "https://mariohdel14nasa-lang.github.io/essential-app-catalog/databasedesktop.json";
+const PALETTE_URL: &str =
+    "https://mariohdel14nasa-lang.github.io/essential-app-catalog/appscolors.json";
+const TARGET_OS_KEY: &str = if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else if cfg!(target_os = "linux") {
+    "linux"
+} else {
+    "unknown"
+};
 const TARGET_OS: &str = if cfg!(target_os = "macos") {
     "macOS"
 } else if cfg!(target_os = "windows") {
@@ -20,11 +34,250 @@ const TARGET_OS: &str = if cfg!(target_os = "macos") {
     "Unknown"
 };
 
+#[derive(Debug)]
+struct Palette {
+    purple: String,
+    black: String,
+    darkgray: String,
+    lightpink: String,
+    darkwhite: String,
+    purplep: String,
+    green: String,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            purple: "#6500f5".to_owned(),
+            black: "#000000".to_owned(),
+            darkgray: "#201e25".to_owned(),
+            lightpink: "#c9adff".to_owned(),
+            darkwhite: "#e7e3eb".to_owned(),
+            purplep: "#402b7a".to_owned(),
+            green: "#448e71".to_owned(),
+        }
+    }
+}
+
+impl Palette {
+    fn set(&mut self, name: &str, value: &str) -> bool {
+        let Some(color) = parse_color(value) else {
+            return false;
+        };
+        let target = match name.to_ascii_lowercase().as_str() {
+            "purple" => &mut self.purple,
+            "black" => &mut self.black,
+            "darkgray" => &mut self.darkgray,
+            "lightpink" => &mut self.lightpink,
+            "darkwhite" => &mut self.darkwhite,
+            "purplep" => &mut self.purplep,
+            "green" => &mut self.green,
+            _ => return false,
+        };
+        *target = color;
+        true
+    }
+
+    fn css_variables(&self) -> String {
+        format!(
+            ":host {{ --palette-purple: {}; --palette-black: {}; --palette-darkgray: {}; --palette-lightpink: {}; --palette-darkwhite: {}; --palette-purplep: {}; --palette-green: {}; }}",
+            self.purple,
+            self.black,
+            self.darkgray,
+            self.lightpink,
+            self.darkwhite,
+            self.purplep,
+            self.green
+        )
+    }
+}
+
+fn parse_color(value: &str) -> Option<String> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    if hex.len() == 6 {
+        return Some(format!("#{hex}"));
+    }
+
+    let alpha = u8::from_str_radix(&hex[..2], 16).ok()?;
+    let red = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let green = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[6..8], 16).ok()?;
+    if alpha == u8::MAX {
+        Some(format!("#{red:02x}{green:02x}{blue:02x}"))
+    } else {
+        Some(format!(
+            "rgba({red}, {green}, {blue}, {:.3})",
+            f32::from(alpha) / f32::from(u8::MAX)
+        ))
+    }
+}
+
+fn collect_json_colors(value: &Value, palette: &mut Palette, count: &mut usize) {
+    match value {
+        Value::Object(object) => {
+            for (name, value) in object {
+                if let Some(color) = value.as_str() {
+                    if palette.set(name, color) {
+                        *count += 1;
+                    }
+                }
+                collect_json_colors(value, palette, count);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_json_colors(value, palette, count);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_remote_palette(source: &str) -> Result<Palette, Box<dyn Error>> {
+    let mut palette = Palette::default();
+    let mut count = 0;
+
+    if let Ok(json) = serde_json::from_str::<Value>(source) {
+        collect_json_colors(&json, &mut palette, &mut count);
+    }
+
+    let mut remaining = source;
+    while let Some(start) = remaining.find("color name=\"") {
+        remaining = &remaining[start + "color name=\"".len()..];
+        let Some(name_end) = remaining.find('"') else {
+            break;
+        };
+        let name = &remaining[..name_end];
+        remaining = &remaining[name_end + 1..];
+        let Some(value_start) = remaining.find('>') else {
+            break;
+        };
+        remaining = &remaining[value_start + 1..];
+        let Some(value_end) = remaining.find("</color>") else {
+            break;
+        };
+        if palette.set(name, &remaining[..value_end]) {
+            count += 1;
+        }
+        remaining = &remaining[value_end + "</color>".len()..];
+    }
+
+    if count == 0 {
+        return Err("The remote palette contains no recognized colors.".into());
+    }
+    Ok(palette)
+}
+
+fn fetch_palette() -> Result<Palette, Box<dyn Error>> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()?
+        .get(PALETTE_URL)
+        .send()?
+        .error_for_status()?;
+    parse_remote_palette(&response.text()?)
+}
+
+fn validate_catalog_url(value: &Value, field: &str) -> Result<Option<String>, Box<dyn Error>> {
+    let Some(value) = value.as_str() else {
+        if value.is_null() {
+            return Ok(None);
+        }
+        return Err(format!("Catalog field '{field}' must be an HTTPS URL.").into());
+    };
+    let url = Url::parse(value)?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(format!("Catalog field '{field}' must be an HTTPS URL.").into());
+    }
+    Ok(Some(url.to_string()))
+}
+
+fn parse_app_catalog(source: &str, platform: &str) -> Result<Value, Box<dyn Error>> {
+    let root: Value = serde_json::from_str(source)?;
+    if root.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err("Unsupported app catalog schema version.".into());
+    }
+    let platform_catalog = root
+        .get("catalog")
+        .and_then(|catalog| catalog.get(platform))
+        .and_then(Value::as_object)
+        .ok_or("The app catalog does not contain the detected platform.")?;
+
+    let mut result = serde_json::Map::new();
+    for category in ["music", "videos", "utilities", "games"] {
+        let apps = platform_catalog
+            .get(category)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("Catalog category '{category}' must be an array."))?;
+        let mut normalized_apps = Vec::with_capacity(apps.len());
+        for app in apps {
+            let app_object = app
+                .as_object()
+                .ok_or("Each catalog app must be a JSON object.")?;
+            let name = app_object
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .ok_or("Each catalog app must have a non-empty name.")?;
+            let description = app_object
+                .get("description")
+                .and_then(Value::as_str)
+                .ok_or("Each catalog app must have a description.")?;
+            let icon =
+                validate_catalog_url(app_object.get("icon").unwrap_or(&Value::Null), "icon")?;
+            let download = validate_catalog_url(
+                app_object.get("download").unwrap_or(&Value::Null),
+                "download",
+            )?;
+
+            let mut normalized_app = serde_json::Map::new();
+            normalized_app.insert("name".to_owned(), Value::String(name.to_owned()));
+            normalized_app.insert(
+                "description".to_owned(),
+                Value::String(description.to_owned()),
+            );
+            if let Some(icon) = icon {
+                normalized_app.insert("icon".to_owned(), Value::String(icon));
+            }
+            if let Some(download) = download {
+                normalized_app.insert("download".to_owned(), Value::String(download));
+            }
+            if let Some(version) = app_object.get("version").and_then(Value::as_str) {
+                normalized_app.insert("version".to_owned(), Value::String(version.to_owned()));
+            }
+            normalized_apps.push(Value::Object(normalized_app));
+        }
+        result.insert(category.to_owned(), Value::Array(normalized_apps));
+    }
+    Ok(Value::Object(result))
+}
+
+fn fetch_app_catalog(platform: &str) -> Result<Value, Box<dyn Error>> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()?
+        .get(APP_CATALOG_URL)
+        .send()?
+        .error_for_status()?;
+    parse_app_catalog(&response.text()?, platform)
+}
+
+fn load_app_icon() -> Result<Icon, Box<dyn Error>> {
+    let image = image::load_from_memory(include_bytes!("../assets/app-icon.png"))?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(Icon::from_rgba(image.into_raw(), width, height)?)
+}
+
 const WINDOW_BUTTONS_SCRIPT: &str = r#"
 (() => {
   if (window.top !== window || window.__essentialServicesControlsInstalled) return;
   window.__essentialServicesControlsInstalled = true;
   const targetOS = "__TARGET_OS__";
+  const appCatalog = JSON.parse(__APP_CATALOG_JSON__);
 
   const host = document.createElement("div");
   host.id = "__essential_services_window_controls";
@@ -34,25 +287,26 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
   root.innerHTML = `
     <style>
       :host { all: initial; }
+      __PALETTE_CSS__
       .controls {
         position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
         display: flex; align-items: center; gap: 6px; height: 35px; padding: 0 10px;
         box-sizing: border-box;
-        border: 1px solid #ffffff44; border-radius: 999px;
-        background: #101827e8; box-shadow: 0 4px 16px #0005;
+        border: 1px solid color-mix(in srgb, var(--palette-darkwhite) 27%, transparent); border-radius: 999px;
+        background: var(--palette-darkgray); box-shadow: 0 4px 16px color-mix(in srgb, var(--palette-black) 33%, transparent);
         backdrop-filter: blur(8px); pointer-events: auto; cursor: grab; z-index: 3;
         visibility: visible; opacity: 1;
       }
       .controls button {
         width: 20px; height: 20px; padding: 0; display: grid; place-items: center;
         flex: 0 0 20px;
-        border: 1px solid #ffffff44; border-radius: 50%;
-        background: #25334a; color: #f3f6fb; cursor: pointer;
+        border: 1px solid color-mix(in srgb, var(--palette-darkwhite) 27%, transparent); border-radius: 50%;
+        background: var(--palette-purplep); color: var(--palette-darkwhite); cursor: pointer;
         transition: background .15s ease, transform .15s ease;
       }
-      .controls button:hover { background: #34445f; transform: scale(1.08); }
-      button:focus-visible { outline: 3px solid #75aaff; outline-offset: 3px; }
-      .controls button.close:hover { background: #c83d4b; }
+      .controls button:hover { background: var(--palette-purple); transform: scale(1.08); }
+      button:focus-visible { outline: 3px solid var(--palette-lightpink); outline-offset: 3px; }
+      .controls button.close:hover { background: var(--palette-purplep); }
       svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
       .controls svg { width: 13px; height: 13px; }
       .sidebar {
@@ -62,43 +316,43 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       }
       .main-nav-group {
         display: flex; flex-direction: column; gap: 5px; padding: 9px;
-        border-radius: 28px; background: #6500f5;
-        box-shadow: 0 8px 24px #0006;
+        border-radius: 28px; background: var(--palette-purple);
+        box-shadow: 0 8px 24px color-mix(in srgb, var(--palette-black) 40%, transparent);
       }
       .sidebar button {
         min-width: 132px; height: 50px; padding: 0 14px; display: flex;
         align-items: center; gap: 11px; border: 0; border-radius: 999px;
-        background: transparent; color: #24113c; cursor: pointer;
+        background: transparent; color: var(--palette-black); cursor: pointer;
         font: 600 14px "Segoe UI", Arial, sans-serif; text-align: left;
         transition: background .15s ease, color .15s ease, transform .15s ease;
       }
-      .main-nav-group button:hover { background: #7e2cff; color: #fff; }
-      .main-nav-group button[aria-current="page"] { background: #17121e; color: #b98aff; }
+      .main-nav-group button:hover { background: var(--palette-purplep); color: var(--palette-darkwhite); }
+      .main-nav-group button[aria-current="page"] { background: var(--palette-darkgray); color: var(--palette-lightpink); }
       .sidebar button[data-section="settings"] {
-        background: #17121e; color: #c9adff;
-        box-shadow: 0 8px 24px #0006;
+        background: var(--palette-darkgray); color: var(--palette-lightpink);
+        box-shadow: 0 8px 24px color-mix(in srgb, var(--palette-black) 40%, transparent);
       }
       .sidebar button[data-section="settings"]:hover,
       .sidebar button[data-section="settings"][aria-current="page"] {
-        background: #282131; color: #dfcaff;
+        background: color-mix(in srgb, var(--palette-darkgray), var(--palette-black) 25%); color: var(--palette-lightpink);
       }
-      .sidebar button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+      .sidebar button:focus-visible { outline: 2px solid var(--palette-darkwhite); outline-offset: 2px; }
       .sidebar svg { width: 22px; height: 22px; flex: 0 0 22px; fill: currentColor; stroke: none; }
       .panel {
         position: fixed; left: 184px; top: 50%; transform: translateY(-50%);
         width: 280px; max-height: min(70vh, 500px); overflow: auto;
-        padding: 20px; border: 1px solid #ffffff24; border-radius: 20px;
-        background: #201e25f5; color: #e7e3eb; box-shadow: 0 8px 28px #0006;
+        padding: 20px; border: 1px solid color-mix(in srgb, var(--palette-darkwhite) 14%, transparent); border-radius: 20px;
+        background: var(--palette-darkgray); color: var(--palette-darkwhite); box-shadow: 0 8px 28px color-mix(in srgb, var(--palette-black) 40%, transparent);
         backdrop-filter: blur(12px); pointer-events: auto;
         font: 14px "Segoe UI", Arial, sans-serif;
       }
       .panel[hidden] { display: none; }
       .panel h2 { margin: 0 0 12px; font-size: 18px; }
-      .panel p { margin: 0; color: #aebbd0; line-height: 1.5; }
+      .panel p { margin: 0; color: color-mix(in srgb, var(--palette-darkwhite) 78%, var(--palette-darkgray)); line-height: 1.5; }
       .apps-panel {
         inset: 0; width: auto; height: 100vh; max-height: none; padding: 86px 7vw 48px 210px;
         box-sizing: border-box; transform: none; border: 0; border-radius: 0;
-        background: #201e25; box-shadow: none; overflow: auto; z-index: 1;
+        background: var(--palette-darkgray); box-shadow: none; overflow: auto; z-index: 1;
       }
       .catalog-content { width: min(100%, 980px); margin: 0 auto; }
       .catalog-heading { display: flex; align-items: center; gap: 18px; margin-bottom: 52px; }
@@ -106,20 +360,20 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       .catalog-heading p { margin-top: 5px; font-size: 16px; }
       .catalog-heading-icon {
         width: 76px; height: 76px; display: grid; place-items: center;
-        border-radius: 50%; background: #17121e; color: #c9adff; flex: 0 0 76px;
+        border-radius: 50%; background: var(--palette-black); color: var(--palette-lightpink); flex: 0 0 76px;
       }
       .catalog-heading-icon svg { width: 34px; height: 34px; fill: currentColor; }
       .category-tabs {
         display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 28px;
-        padding: 7px; border-radius: 999px; background: #17121e; width: fit-content;
+        padding: 7px; border-radius: 999px; background: var(--palette-black); width: fit-content;
       }
       .category-tab {
         min-height: 40px; padding: 0 17px; border: 0; border-radius: 999px;
-        background: transparent; color: #c6bfce; cursor: pointer;
+        background: transparent; color: var(--palette-darkwhite); cursor: pointer;
         font: 600 14px "Segoe UI", Arial, sans-serif;
       }
-      .category-tab:hover { background: #33283f; color: #fff; }
-      .category-tab[aria-pressed="true"] { background: #6500f5; color: #fff; }
+      .category-tab:hover { background: var(--palette-purplep); color: var(--palette-darkwhite); }
+      .category-tab[aria-pressed="true"] { background: var(--palette-purple); color: var(--palette-darkwhite); }
       .app-list { display: flex; flex-direction: column; gap: 18px; }
       .app-card {
         display: grid; grid-template-columns: 76px minmax(0, 1fr) 220px;
@@ -127,93 +381,100 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       }
       .app-icon {
         width: 76px; height: 76px; display: grid; place-items: center;
-        border-radius: 22px; background: #30243d; color: #d3b6ff;
+        border-radius: 22px; background: var(--palette-purplep); color: var(--palette-lightpink);
         font: 700 25px "Segoe UI", Arial, sans-serif;
       }
+      .app-icon img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
       .app-details h3 { margin: 0 0 4px; font-size: 25px; font-weight: 500; }
-      .app-details p { margin: 0; color: #c6bfce; font-size: 17px; }
+      .app-details p { margin: 0; color: color-mix(in srgb, var(--palette-darkwhite) 82%, var(--palette-darkgray)); font-size: 17px; }
+      .app-details .app-version { margin-top: 4px; font-size: 13px; }
       .app-download {
-        min-height: 72px; border: 0; border-radius: 24px;
-        background: #6500f5; color: #17121e;
+        min-height: 72px; display: flex; align-items: center; justify-content: center;
+        border: 0; border-radius: 24px; text-decoration: none;
+        background: var(--palette-purple); color: var(--palette-black);
         font: 600 20px "Segoe UI", Arial, sans-serif;
       }
-      .app-download:disabled { opacity: .48; cursor: not-allowed; }
+      .app-download:hover { filter: brightness(1.12); }
+      .app-download.disabled { opacity: .48; cursor: not-allowed; }
+      .app-download.disabled:hover { filter: none; }
       .catalog-empty {
         min-height: 180px; display: grid; place-content: center; gap: 10px;
-        border: 1px solid #ffffff14; border-radius: 20px; background: #ffffff06;
+        border: 1px solid color-mix(in srgb, var(--palette-darkwhite) 8%, transparent); border-radius: 20px; background: color-mix(in srgb, var(--palette-darkgray), var(--palette-darkwhite) 5%);
         text-align: center;
       }
       .catalog-empty[hidden], .app-list[hidden] { display: none; }
       .catalog-empty strong { font-size: 17px; font-weight: 600; }
-      .catalog-empty p { max-width: 430px; margin: 0 auto; color: #bdb8c4; }
+      .catalog-empty p { max-width: 430px; margin: 0 auto; color: color-mix(in srgb, var(--palette-darkwhite) 78%, var(--palette-darkgray)); }
       .settings-panel {
         inset: 0; width: auto; height: 100vh; max-height: none; padding: 48px 7vw;
         box-sizing: border-box; transform: none; border: 0; border-radius: 0;
-        background: #201e25; box-shadow: none; overflow: auto; z-index: 1;
+        background: var(--palette-darkgray); box-shadow: none; overflow: auto; z-index: 1;
       }
       .settings-content { width: min(100%, 980px); margin: 0 auto; }
       .settings-content > h1 { margin: 0 0 30px; font-size: 32px; font-weight: 500; }
       .settings-section { margin: 0 0 26px; }
       .settings-section > h2 {
-        margin: 0 0 10px; color: #8e36ff; font-size: 14px; font-weight: 600;
+        margin: 0 0 10px; color: var(--palette-purple); font-size: 14px; font-weight: 600;
       }
       .settings-card {
-        overflow: hidden; border-radius: 17px; background: #39373e;
+        overflow: hidden; border-radius: 17px; background: color-mix(in srgb, var(--palette-darkgray), var(--palette-darkwhite) 13%);
       }
       .setting-row {
         min-height: 76px; padding: 14px 18px; display: flex; align-items: center;
-        gap: 16px; color: #e7e3eb; cursor: pointer;
+        gap: 16px; color: var(--palette-darkwhite); cursor: pointer;
       }
-      .setting-row + .setting-row { border-top: 1px solid #ffffff0d; }
+      .setting-row + .setting-row { border-top: 1px solid color-mix(in srgb, var(--palette-darkwhite) 5%, transparent); }
       .setting-icon {
-        width: 24px; flex: 0 0 24px; color: #8000ff;
+        width: 24px; flex: 0 0 24px; color: var(--palette-purple);
         font-size: 21px; text-align: center;
       }
       .setting-copy { flex: 1; min-width: 0; }
       .setting-copy strong { display: block; margin-bottom: 4px; font-size: 14px; font-weight: 500; }
-      .setting-copy small { display: block; color: #c6bfce; font-size: 12px; line-height: 1.4; }
+      .setting-copy small { display: block; color: color-mix(in srgb, var(--palette-darkwhite) 82%, var(--palette-darkgray)); font-size: 12px; line-height: 1.4; }
       .setting-switch {
         appearance: none; width: 48px; height: 28px; margin: 0; flex: 0 0 48px;
         position: relative; border: 0; border-radius: 999px;
-        background: #77747c; cursor: pointer; transition: background .18s ease;
+        background: color-mix(in srgb, var(--palette-darkgray), var(--palette-darkwhite) 38%); cursor: pointer; transition: background .18s ease;
       }
       .setting-switch::after {
         content: ""; position: absolute; top: 4px; left: 4px;
-        width: 20px; height: 20px; border-radius: 50%; background: #ddd9e2;
+        width: 20px; height: 20px; border-radius: 50%; background: var(--palette-darkwhite);
         transition: transform .18s ease, background .18s ease;
       }
-      .setting-switch:checked { background: #6500f5; }
-      .setting-switch:checked::after { transform: translateX(20px); background: #17121e; }
+      .setting-switch:checked { background: var(--palette-purple); }
+      .setting-switch:checked::after { transform: translateX(20px); background: var(--palette-black); }
       .setting-switch:disabled { opacity: .48; cursor: not-allowed; }
-      .setting-switch:focus-visible { outline: 2px solid #d3b6ff; outline-offset: 3px; }
+      .setting-switch:focus-visible { outline: 2px solid var(--palette-lightpink); outline-offset: 3px; }
       .language-select {
-        min-width: 150px; padding: 10px 34px 10px 12px; border: 1px solid #ffffff24;
-        border-radius: 10px; background: #28262d; color: #f3f0f6;
+        min-width: 150px; padding: 10px 34px 10px 12px; border: 1px solid color-mix(in srgb, var(--palette-darkwhite) 14%, transparent);
+        border-radius: 10px; background: var(--palette-darkgray); color: var(--palette-darkwhite);
         font: 14px "Segoe UI", Arial, sans-serif;
       }
-      .language-select:focus-visible { outline: 2px solid #d3b6ff; outline-offset: 2px; }
+      .language-select:focus-visible { outline: 2px solid var(--palette-lightpink); outline-offset: 2px; }
       .settings-update {
         width: 100%; min-height: 64px; padding: 12px 20px; border: 0;
-        border-radius: 18px; background: #448e71; color: #fff;
+        display: flex; align-items: center; border-radius: 18px;
+        background: var(--palette-green); color: var(--palette-darkwhite);
         text-align: left; cursor: pointer; font: 600 16px "Segoe UI", Arial, sans-serif;
+        text-decoration: none;
       }
-      .settings-update:hover { background: #55a383; }
+      .settings-update:hover { background: color-mix(in srgb, var(--palette-green), var(--palette-darkwhite) 15%); }
       .credits-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; }
-      .credit strong { display: block; margin-bottom: 3px; color: #e7e3eb; font-size: 14px; font-weight: 500; }
-      .credit span { color: #bdb8c4; font-size: 12px; }
+      .credit strong { display: block; margin-bottom: 3px; color: var(--palette-darkwhite); font-size: 14px; font-weight: 500; }
+      .credit span { color: color-mix(in srgb, var(--palette-darkwhite) 78%, var(--palette-darkgray)); font-size: 12px; }
       .about-card { padding: 28px; text-align: center; }
       .about-card h2 { margin: 0 0 12px; font-size: 28px; font-weight: 500; }
-      .about-card p { margin: 0 auto 12px; max-width: 620px; color: #d3ced8; line-height: 1.5; }
+      .about-card p { margin: 0 auto 12px; max-width: 620px; color: color-mix(in srgb, var(--palette-darkwhite) 90%, var(--palette-darkgray)); line-height: 1.5; }
       .about-links { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
       .about-links a {
         min-height: 42px; padding: 0 18px; display: inline-flex; align-items: center;
-        border-radius: 999px; background: #6500f5; color: #17121e;
+        border-radius: 999px; background: var(--palette-purple); color: var(--palette-black);
         font-weight: 600; text-decoration: none;
       }
-      .about-links a:hover { background: #8433ff; color: #fff; }
+      .about-links a:hover { background: color-mix(in srgb, var(--palette-purple), var(--palette-lightpink) 20%); color: var(--palette-darkwhite); }
       :host([data-pitch-black="true"]) .apps-panel,
-      :host([data-pitch-black="true"]) .settings-panel { background: #000; }
-      :host([data-pitch-black="true"]) .settings-card { background: #171717; }
+      :host([data-pitch-black="true"]) .settings-panel { background: var(--palette-black); }
+      :host([data-pitch-black="true"]) .settings-card { background: color-mix(in srgb, var(--palette-black), var(--palette-darkwhite) 9%); }
       :host([data-use-blur="false"]) .controls,
       :host([data-use-blur="false"]) .panel { backdrop-filter: none; }
       @media (max-width: 520px) {
@@ -232,6 +493,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
         .app-icon { width: 52px; height: 52px; border-radius: 16px; font-size: 19px; }
         .app-details h3 { font-size: 18px; }
         .app-details p { font-size: 14px; }
+        .app-details .app-version { font-size: 12px; }
         .app-download { grid-column: 2; min-height: 44px; font-size: 15px; }
         .settings-panel { padding: 76px 16px 28px 72px; }
         .settings-content > h1 { font-size: 26px; }
@@ -337,7 +599,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
             </label>
           </div>
         </section>
-        <button class="settings-update" id="settings-update" type="button" data-i18n="update">↓　Actualizar página de Essential Services</button>
+        <a class="settings-update" id="settings-update" href="https://github.com/mariohdel14nasa-lang/essential-app-catalog/releases/latest" target="_blank" rel="noopener noreferrer" data-i18n="update">Actualizar</a>
         <section class="settings-section" aria-labelledby="appearance-heading">
           <h2 id="appearance-heading" data-i18n="appearance">Apariencia</h2>
           <div class="settings-card">
@@ -365,7 +627,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
         <section class="settings-section" aria-labelledby="about-heading">
           <h2 id="about-heading" data-i18n="about">Acerca de</h2>
           <div class="settings-card about-card">
-            <h2 id="about-title">Essential Services v1.0</h2>
+            <h2 id="about-title">Essential Services Beta</h2>
             <p data-i18n="aboutDescription">A service app for other apps</p>
             <p data-i18n="aboutCredits">Desarrollado por mariohdel14nasa-lang con ❤️ desde 🇪🇸</p>
             <div class="about-links">
@@ -410,7 +672,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       allowLocked: "Permitir cuando esté bloqueado",
       allowLockedDescription: "No disponible en escritorio: el bloqueo lo controla el sistema operativo.",
       lockedTitle: "El acceso cuando el dispositivo está bloqueado lo controla el sistema operativo.",
-      update: "↓　Actualizar página de Essential Services", appearance: "Apariencia",
+      update: "Actualizar", appearance: "Apariencia",
       pitchBlack: "Modo negro puro", pitchBlackDescription: "Usar un fondo negro en las vistas de la aplicación.",
       useBlur: "Usar desenfoque", useBlurDescription: "Aplicar desenfoque progresivo a los elementos de la interfaz.",
       credits: "Créditos", calculatorCreators: "Creadores de Calculator",
@@ -420,8 +682,9 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       aboutCredits: "Desarrollado por mariohdel14nasa-lang con ❤️ desde 🇪🇸",
       website: "Website", viewGithub: "Ver en GitHub",
       emptyCategory: "No hay apps de {category} disponibles todavía",
+      catalogLoadError: "No se pudo cargar el catálogo. Comprueba tu conexión e inténtalo al volver a abrir la app.",
       appCount: "{count} {label}", appSingular: "app", appPlural: "apps",
-      pendingDownload: "Descarga pendiente", downloadNotConfigured: "El enlace de descarga aún no está configurado",
+      pendingDownload: "Descarga pendiente", download: "Descargar", downloadNotConfigured: "El enlace de descarga aún no está configurado",
       restore: "Restaurar"
     },
     en: {
@@ -439,7 +702,7 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       allowLocked: "Allow when locked",
       allowLockedDescription: "Unavailable on desktop: screen locking is controlled by the operating system.",
       lockedTitle: "Access while the device is locked is controlled by the operating system.",
-      update: "↓　Refresh Essential Services page", appearance: "Appearance",
+      update: "Update", appearance: "Appearance",
       pitchBlack: "Pitch Black Mode", pitchBlackDescription: "Use a black background in the application views.",
       useBlur: "Use Blur", useBlurDescription: "Apply progressive blur to interface elements.",
       credits: "Credits", calculatorCreators: "Creators of Calculator",
@@ -449,8 +712,9 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
       aboutCredits: "Developed by mariohdel14nasa-lang with ❤️ from 🇪🇸",
       website: "Website", viewGithub: "View on GitHub",
       emptyCategory: "No {category} apps available yet",
+      catalogLoadError: "The catalog could not be loaded. Check your connection and try again when reopening the app.",
       appCount: "{count} {label}", appSingular: "app", appPlural: "apps",
-      pendingDownload: "Download pending", downloadNotConfigured: "The download link has not been configured yet",
+      pendingDownload: "Download pending", download: "Download", downloadNotConfigured: "The download link has not been configured yet",
       restore: "Restore"
     }
   };
@@ -525,61 +789,83 @@ const WINDOW_BUTTONS_SCRIPT: &str = r#"
     savePreference("useBlur", settings.useBlur);
     host.dataset.useBlur = String(settings.useBlur);
   });
-  root.getElementById("settings-update").addEventListener("click", () => window.location.reload());
-  const categories = {
-    music: { titleKey: "music", apps: [] },
-    videos: { titleKey: "videos", apps: [] },
-    utilities: {
-      titleKey: "utilities",
-      apps: [
-        { name: "Sefirah", description: { es: "De escritorio a móvil", en: "Desktop to mobile" } },
-        { name: "Calculator", description: { es: "Calculadora de Fossify", en: "Fossify Calculator" } },
-        { name: "Draft", description: { es: "Notas de Sameerasw", en: "Sameerasw's notes" } }
-      ]
-    },
-    games: { titleKey: "games", apps: [] }
+  const categoryTitles = {
+    music: "music",
+    videos: "videos",
+    utilities: "utilities",
+    games: "games"
   };
   const appList = root.getElementById("app-list");
   const catalogEmpty = root.getElementById("catalog-empty");
+  const catalogAvailable = appCatalog !== null;
   const renderCategory = categoryId => {
-    const category = categories[categoryId];
-    if (!category) return;
-    const categoryTitle = t(category.titleKey);
+    const titleKey = categoryTitles[categoryId];
+    if (!titleKey) return;
+    const categoryTitle = t(titleKey);
+    const apps = catalogAvailable ? appCatalog[categoryId] : [];
     root.getElementById("apps-title").textContent = categoryTitle;
     root.getElementById("apps-count").textContent = t("appCount", {
-      count: category.apps.length,
-      label: t(category.apps.length === 1 ? "appSingular" : "appPlural")
+      count: apps.length,
+      label: t(apps.length === 1 ? "appSingular" : "appPlural")
     });
     root.querySelectorAll(".category-tab").forEach(tab => {
       tab.setAttribute("aria-pressed", String(tab.dataset.category === categoryId));
     });
     appList.replaceChildren();
-    catalogEmpty.hidden = category.apps.length > 0;
-    appList.hidden = category.apps.length === 0;
-    if (category.apps.length === 0) {
-      root.getElementById("catalog-empty-title").textContent = t("emptyCategory", { category: categoryTitle });
+    catalogEmpty.hidden = apps.length > 0;
+    appList.hidden = apps.length === 0;
+    if (apps.length === 0) {
+      root.getElementById("catalog-empty-title").textContent = catalogAvailable
+        ? t("emptyCategory", { category: categoryTitle })
+        : t("catalogLoadError");
       return;
     }
-    for (const app of category.apps) {
+    for (const app of apps) {
+      const downloadHost = app.download ? new URL(app.download).hostname.toLowerCase() : "";
+      const isExampleDownload = downloadHost === "example.com" || downloadHost.endsWith(".example.com");
+      const hasDownload = Boolean(app.download) && !isExampleDownload;
       const card = document.createElement("article");
       card.className = "app-card";
       const icon = document.createElement("div");
       icon.className = "app-icon";
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = app.name.slice(0, 1);
+      if (app.icon) {
+        const image = document.createElement("img");
+        image.src = app.icon;
+        image.alt = "";
+        image.loading = "lazy";
+        image.addEventListener("error", () => {
+          icon.textContent = app.name.slice(0, 1);
+        }, { once: true });
+        icon.append(image);
+      } else {
+        icon.textContent = app.name.slice(0, 1);
+      }
       const details = document.createElement("div");
       details.className = "app-details";
       const title = document.createElement("h3");
       title.textContent = app.name;
       const description = document.createElement("p");
-      description.textContent = app.description[language];
+      description.textContent = app.description;
       details.append(title, description);
-      const download = document.createElement("button");
-      download.className = "app-download";
-      download.type = "button";
-      download.disabled = true;
-      download.textContent = t("pendingDownload");
-      download.title = t("downloadNotConfigured");
+      if (app.version) {
+        const version = document.createElement("p");
+        version.className = "app-version";
+        version.textContent = app.version;
+        details.append(version);
+      }
+      const download = document.createElement(hasDownload ? "a" : "button");
+      download.className = `app-download${hasDownload ? "" : " disabled"}`;
+      if (hasDownload) {
+        download.href = app.download;
+        download.target = "_blank";
+        download.rel = "noopener noreferrer";
+      } else {
+        download.type = "button";
+        download.disabled = true;
+      }
+      download.textContent = t(hasDownload ? "download" : "pendingDownload");
+      if (!hasDownload) download.title = t("downloadNotConfigured");
       card.append(icon, details, download);
       appList.append(card);
     }
@@ -662,16 +948,43 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|url| normalize_url(&url))
         .transpose()?
         .unwrap_or_else(|| DEFAULT_URL.to_owned());
+    let palette = match fetch_palette() {
+        Ok(palette) => palette,
+        Err(error) => {
+            eprintln!("Could not refresh the remote color palette: {error}");
+            Palette::default()
+        }
+    };
+    let app_catalog = match fetch_app_catalog(TARGET_OS_KEY) {
+        Ok(catalog) => Some(catalog),
+        Err(error) => {
+            eprintln!("Could not load the remote app catalog: {error}");
+            None
+        }
+    };
 
     let event_loop = EventLoopBuilder::<WindowCommand>::with_user_event().build();
     let event_proxy = event_loop.create_proxy();
+    let app_icon = load_app_icon()?;
     let window = WindowBuilder::new()
-        .with_title("Essential Services Desktop")
+        .with_title("Essential Services")
+        .with_window_icon(Some(app_icon))
         .with_decorations(false)
         .with_inner_size(LogicalSize::new(1200.0, 800.0))
         .build(&event_loop)?;
 
-    let initialization_script = WINDOW_BUTTONS_SCRIPT.replace("__TARGET_OS__", TARGET_OS);
+    let catalog_json = app_catalog
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?
+        .unwrap_or_else(|| "null".to_owned());
+    let initialization_script = WINDOW_BUTTONS_SCRIPT
+        .replace("__TARGET_OS__", TARGET_OS)
+        .replace("__PALETTE_CSS__", &palette.css_variables())
+        .replace(
+            "__APP_CATALOG_JSON__",
+            &serde_json::to_string(&catalog_json)?,
+        );
     let _webview = WebViewBuilder::new()
         .with_initialization_script_for_main_only(initialization_script, true)
         .with_ipc_handler(move |request: Request<String>| {
@@ -712,7 +1025,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_url;
+    use super::{
+        normalize_url, parse_app_catalog, parse_color, parse_remote_palette, TARGET_OS_KEY,
+    };
 
     #[test]
     fn normalizes_a_host_to_https() {
@@ -733,5 +1048,104 @@ mod tests {
     #[test]
     fn rejects_non_http_schemes() {
         assert!(normalize_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn parses_argb_and_rgb_palette_colors() {
+        assert_eq!(parse_color("#FF6200EE").as_deref(), Some("#6200ee"));
+        assert_eq!(parse_color("#B8CEDB").as_deref(), Some("#B8CEDB"));
+        assert_eq!(parse_color("#402B7A").as_deref(), Some("#402B7A"));
+        assert!(parse_color("#12GG00").is_none());
+    }
+
+    #[test]
+    fn reads_colors_from_the_remote_palette_markup() {
+        let response = r##"[
+          {
+            color name="purple">#FF6200EE</color>
+            color name="black">#FF000000</color>
+            color name="darkgray">#FF1C1B1F</color>
+            color name="lightpink">#FFD0BCFF</color>
+            color name="darkwhite">#B8CEDB</color>
+            color name="purplep">#402B7A</color>
+            color name="green">#488066</color>
+          },
+        ]"##;
+        let palette = parse_remote_palette(response).unwrap();
+        assert_eq!(palette.purple, "#6200ee");
+        assert_eq!(palette.black, "#000000");
+        assert_eq!(palette.darkgray, "#1c1b1f");
+        assert_eq!(palette.lightpink, "#d0bcff");
+        assert_eq!(palette.darkwhite, "#B8CEDB");
+        assert_eq!(palette.purplep, "#402B7A");
+        assert_eq!(palette.green, "#488066");
+    }
+
+    #[test]
+    fn rejects_remote_palette_without_recognized_colors() {
+        assert!(parse_remote_palette("{ not a palette }").is_err());
+    }
+
+    #[test]
+    fn parses_only_the_detected_os_catalog() {
+        let response = r#"{
+          "schemaVersion": 1,
+          "catalog": {
+            "windows": {
+              "music": [],
+              "videos": [],
+              "utilities": [{
+                "name": "Tool",
+                "description": "A desktop tool",
+                "icon": "https://example.org/icon.png",
+                "download": "https://example.org/tool.zip",
+                "version": "2.0"
+              }],
+              "games": []
+            }
+          }
+        }"#;
+        let catalog = parse_app_catalog(response, "windows").unwrap();
+        assert_eq!(catalog["utilities"][0]["name"], "Tool");
+        assert_eq!(catalog["utilities"][0]["version"], "2.0");
+        assert_eq!(catalog["music"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn rejects_insecure_app_download_urls() {
+        let response = r#"{
+          "schemaVersion": 1,
+          "catalog": {
+            "windows": {
+              "music": [],
+              "videos": [],
+              "utilities": [{
+                "name": "Tool",
+                "description": "A desktop tool",
+                "download": "http://example.org/tool.zip"
+              }],
+              "games": []
+            }
+          }
+        }"#;
+        assert!(parse_app_catalog(response, "windows").is_err());
+    }
+
+    #[test]
+    fn rejects_catalogs_with_missing_categories_or_unsupported_schema() {
+        assert!(
+            parse_app_catalog(r#"{"schemaVersion":2,"catalog":{"windows":{}}}"#, "windows")
+                .is_err()
+        );
+        assert!(parse_app_catalog(
+            r#"{"schemaVersion":1,"catalog":{"windows":{"music":[]}}}"#,
+            "windows"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn maps_the_build_platform_to_catalog_key() {
+        assert!(["windows", "macos", "linux"].contains(&TARGET_OS_KEY));
     }
 }
